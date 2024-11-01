@@ -1,0 +1,71 @@
+---
+title: "Step 1: Differential expression calculation rerun 2024"
+author: "Eleftheria Theodoropoulou"
+date: "Monday 29th April 2024"
+output: html_notebook
+---
+
+Make the differential expression object for the rerun 2024 for the publication.
+
+```{r include=FALSE}
+#packages:
+library(DESeq2)
+library(tximport)
+library(sva)
+library(dplyr)
+```
+
+```{r include=FALSE}
+#directories:
+salmonDir <- "data/all_quant_files/"
+dataDir <- "data/"
+annotDir <- "data/"
+outDir <- "out/"
+```
+
+```{r include=FALSE}
+#metadata:
+sampleInfo <- read.csv(file = paste0(dataDir, "F0_metadata.csv"), sep = ",", header = TRUE)
+sampleInfo$group <- factor(sampleInfo$treatment, levels=c("control", "10mg.kg", "100mg.kg"))
+sampleInfo$file <- paste0(salmonDir,sampleInfo$sample.ID,"/quant.sf")
+files <- sampleInfo$file
+names(files) <- sampleInfo$NGI.ID
+
+# add the rin value and the plate number where the facility did the library prep
+rin <- read.csv(file = paste0(dataDir, "liver_RNA_facility_RIN_values.csv"), sep = ",", header = TRUE)
+sampleInfo <- left_join(x=sampleInfo, y=rin, by="sample.ID")
+```
+
+```{r include=FALSE}
+#quantification files from Salmon used:
+tx2gene <- read.table(paste0(annotDir,"tx2gene.tsv"))
+tx2gene <- tx2gene[,1:2]
+colnames(tx2gene) <- c("txId", "geneId")
+#import the data based on the Salmon file paths:
+txi <- tximport(files, type="salmon", tx2gene=tx2gene)
+```
+
+## Differrential expression analysis:
+```{r include=FALSE}
+#create the DESeq object with SVA:
+dds <- DESeqDataSetFromTximport(txi, colData = sampleInfo, design = ~ group)
+dds <- estimateSizeFactors(dds)
+dat  <- counts(dds, normalized = TRUE)
+idx  <- rowMeans(dat) > 1
+dat  <- dat[idx, ]
+mod  <- model.matrix(~ group, colData(dds))
+mod0 <- model.matrix(~ 1, colData(dds))
+svseq <- svaseq(dat, mod, mod0, n.sv = 2)
+ddssva <- dds
+ddssva$SV1 <- svseq$sv[,1]
+ddssva$SV2 <- svseq$sv[,2]
+design(ddssva) <- ~ SV1 + SV2 + group
+
+ddssva <- DESeq(ddssva)
+```
+
+Why do we correct with both SV1 and SV2? -> more exploration in another notebook
+```{r include=FALSE}
+#here we could save the data:
+save(ddssva, file = paste0(dataDir, "ddssva_F0.RData"))
+```

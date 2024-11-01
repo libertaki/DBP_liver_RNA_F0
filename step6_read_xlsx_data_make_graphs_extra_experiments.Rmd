@@ -1,0 +1,326 @@
+---
+title: "read xlsx file with the raw data, do statistics and make into graph for the extra experiments"
+output: html_notebook
+author: "Eleftheria Theodoropoulou"
+date: "15 August 2024"
+---
+
+This notebook was adapted from step5 made for the publication and it creates the figure and calculates statistics for the extra experiments.
+```{r include=FALSE}
+library(readxl)
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+library(multcomp)
+library(tidyverse)
+library(broom)
+library(rstatix)
+library(cowplot)
+library(effectsize)
+```
+
+```{r}
+rawres <- "wb_august_24_ET.xlsx"
+mdafile <- "MDA_ET.xlsx"
+outDir <- "/paper_revision_copyfrombackup"
+```
+
+```{r include=FALSE}
+# import phenotype data
+mda <- read_excel(mdafile, sheet = "Sheet1")
+sod <- read_excel(rawres, sheet = "sod1")
+tnfa <- read_excel(rawres, sheet = "tnfa")
+il6 <- read_excel(rawres, sheet = "il6")
+ast <- read_excel(rawres, sheet = "ast")
+alt <- read_excel(rawres, sheet = "alt")
+
+all_res_names <- c("mda", "sod", "tnfa", "il6", "ast", "alt") 
+
+#not all results need a western blot batch, as they were measured with other methods, therefore we need to subset the wb ones:
+wb_res_names <- all_res_names[!all_res_names %in% c("mda")]
+```
+
+```{r}
+numbers_c <- c(1:4, 13:16, 25:28)
+numbers_10 <- c(5:8, 17:20, 29:32)
+numbers_100 <- c(9:12, 21:24, 33:36)
+samples_c <- paste0("F0_", numbers_c)
+samples_10 <- paste0("F0_", numbers_10)
+samples_100 <- paste0("F0_", numbers_100)
+#fix the columns and the names
+mda <- mda[, c(1, 3:4)]
+colnames(mda) <- c("sample.ID", "measurement", "group")
+mda$sample.ID <- paste0("F0_", mda$sample.ID)
+mda <- mda %>% 
+    mutate(group = case_when(
+      group == "c" ~ "control",
+      group == "10" ~ "10 mg/kg",
+      group == "100" ~ "100 mg/kg"
+    )) %>%
+  mutate_at(vars(group), factor, levels= c("control", "10 mg/kg", "100 mg/kg"))
+
+for (name in wb_res_names) {
+  current_df <- get(name)
+  df <- current_df %>%
+    drop_na() %>%
+    mutate(sample.ID = paste0("F0_", ID)) %>%
+    relocate(sample.ID) %>%
+    select(-ID) %>%
+    dplyr::rename(wb_gel_num = gel) %>%
+    mutate_at(vars(wb_gel_num), factor, levels= c("1", "2", "3", "4")) %>%
+    mutate(group = case_when(
+      sample.ID %in% samples_c ~ "control",
+      sample.ID %in% samples_10 ~ "10 mg/kg",
+      sample.ID %in% samples_100 ~ "100 mg/kg"
+    )) %>%
+    mutate_at(vars(group), factor, levels= c("control", "10 mg/kg", "100 mg/kg"))
+              
+  assign(name, df)
+}
+```
+
+After correcting for the new values of gel3 actin (stripped and re-did), we named it gel4. Therefore, we will remove gel3 (something had gone wrong with that WB) and continue the analysis:
+```{r}
+for (name in wb_res_names) {
+  current_df <- get(name)
+  df <- current_df %>%
+     filter(wb_gel_num != "3") %>%
+    mutate_at(vars(wb_gel_num), factor, levels= c("1", "2", "4"))
+  
+  assign(name, df)
+}
+
+# For TNF-alpha, remove the batch 4 as well (something was wrong with that WB):
+
+tnfa <- tnfa %>%
+  filter(wb_gel_num != "4") %>%
+  mutate_at(vars(wb_gel_num), factor, levels= c("1", "2"))
+```
+After doing tests and visualisations to check for data normality, variance homogeneity, outliers, skewness and distributions, we decided: We will log transform all the WB data and do two way ANOVA, since we have the "batch" effect also. We will ALSO log transform the other data and do ANOVA. Post hoc we will do Dunnet on all for the "group" variable.
+
+```{r}
+# do all but oil_red_o, because that one has zeroes
+for (name in all_res_names){
+  current_df <- get(name)
+  #log transform the measurement:
+  current_df$log_measurement <- log2(current_df$measurement)
+  #save in the data frame:
+  assign(name, current_df)
+}
+```
+
+Prepare the graph statistics:
+```{r}
+# make sure it is in the right order (check order of all_res_names)
+titles <- c("MDA",  "SOD", "TNF-α",  "IL-6", "AST", "ALT")
+
+df_names <- data.frame(title = titles, ylab= NA, df_name = all_res_names)
+rownames(df_names) <- df_names$df_name
+
+df_names$ylab[df_names$df_name %in% wb_res_names] <- "log2 levels"
+df_names$ylab[df_names$df_name %in% "mda"] <- "integrated intensity"
+```
+
+
+```{r}
+#put all the results in a df list
+df_list <- list()
+for (name in all_res_names) {
+  current_df <- get(name)
+  assign(name, current_df)
+  df_list[[name]] <- current_df
+}
+
+#made a df of the titles and one of the ylabs
+df_titles <- data.frame(sod=df_names["sod", "title"], tnfa=df_names["tnfa", "title"])
+for (n in df_names$df_name[!df_names$df_name %in% c("sod", "tnfa")]){
+  df_titles$n <- df_names[n,"title"]
+  colnames(df_titles)[ncol(df_titles)] <- n
+}
+df_ylabs <- data.frame(sod=df_names["sod", "ylab"], tnfa=df_names["tnfa", "ylab"])
+for (n in df_names$df_name[!df_names$df_name %in% c("sod", "tnfa")]){
+  df_ylabs$n <- df_names[n,"ylab"]
+  colnames(df_ylabs)[ncol(df_ylabs)] <- n
+}
+
+#ad the titles and ylabs as df in this too - don't need this after all
+#my_objects <- list(df_list, df_titles, df_ylabs)
+```
+
+```{r}
+#fix the stats for the stars
+stars <- function(p) {
+  case_when(
+    p <= 0.001 ~ "***",
+    p <= 0.01  ~ "**",
+    p <= 0.05  ~ "*",
+    p <= 0.1   ~ "#"
+  )
+}
+```
+
+log data plots with one way ANOVA:
+```{r}
+#the plot with stars from Dunnet for raw data (no WB)
+plot_stars <- function(df, title, ylab) {
+  anova.res <- aov(log_measurement ~ group, data = df)
+  dunnet <- glht(anova.res, mcp(group = "Dunnet")) %>% 
+    tidy() %>% 
+    mutate(contrast = str_split(contrast, " - "), stars = stars(adj.p.value))
+  p <- ggplot(df, aes(x=group, y=log_measurement, fill=group)) +
+    stat_boxplot(geom = "errorbar", width = 0.25)+
+    geom_boxplot(outlier.color = NA, width = 0.5) +
+    geom_jitter(shape=16, position=position_jitter(0.1)) + 
+    scale_fill_brewer(palette="Blues") +
+    theme_classic() +
+    theme(legend.position = "none", aspect.ratio = 1, 
+          axis.text=element_text(size=13),
+          axis.title.y=element_text(size=14, face="bold", margin = margin(t = 0 , r = 10, b = 0, l = 0)),
+          plot.title=element_text(size=14, face="bold", vjust=2)) +
+    ylim(min(df$log_measurement), 1.02 * max(df$log_measurement)) + #
+    labs(x = "", title = "", y = paste0(title," (", ylab, ")")) +
+    scale_x_discrete(labels = c("Control", "10 mg/kg", "100 mg/kg")) +
+    #stat_compare_means(method = "anova", label.x = 0.8, label.y = 1.6 * max(df$log_measurement), size=5) +
+    ggsignif::geom_signif(
+      comparisons = dunnet$contrast,
+      annotations = dunnet$stars,
+      y_position = c(1.005 *max(df$log_measurement), 1.01 * max(df$log_measurement)),
+      tip_length = 0,
+      textsize = 7)
+}
+
+#get the stat results too:
+anova_stats <- function(df) {
+  anova.res <- aov(log_measurement ~ group, data = df)
+  s <- summary(anova.res)
+  p_val <- s[[1]]$`Pr(>F)`[1]
+  print(paste(n, "one-way ANOVA p-value", round(p_val, digits=4)))
+  dunnet <- glht(anova.res, mcp(group = "Dunnet")) %>% 
+    tidy() %>% 
+    mutate(stars = stars(adj.p.value))
+  print(paste(dunnet$contrast, round(dunnet$adj.p.value, digits=4), dunnet$stars))
+}
+```
+
+WB plots with two way ANOVA:
+```{r}
+#library(viridis)
+#the plot with stars from Dunnet for WB data, log transformed
+wb_plot_stars <- function(df, title, ylab) {
+  anova.res <- aov(log_measurement ~ group + wb_gel_num, data = df)
+  dunnet <- glht(anova.res, mcp(group = "Dunnet")) %>% 
+    tidy() %>% 
+    mutate(contrast = str_split(contrast, " - "), stars = stars(adj.p.value))
+  p <- ggplot(df,aes(x=group, y=log_measurement, fill=group)) +
+    stat_boxplot(geom = "errorbar", width = 0.25)+
+    geom_boxplot(outlier.color = NA, width = 0.5) +
+    geom_jitter(shape=16, position=position_jitter(0.1)) +  #aes(color = wb_gel_num), if I want to colour them per batch
+    scale_fill_brewer(palette="Blues") +
+    #scale_color_viridis(option = "plasma") +
+    theme_classic() +
+    theme(legend.position = "none", aspect.ratio = 1, 
+          axis.text=element_text(size=13),
+          axis.title.y=element_text(size=14, face="bold", margin = margin(t = 0 , r = 10, b = 0, l = 0))) +
+    ylim(min(df$log_measurement), 1 * abs(max(df$log_measurement) - min(df$log_measurement))) + #
+    labs(x = "", title = "", y = paste0(title," (", ylab, ")")) +
+    scale_x_discrete(labels = c("Control", "10 mg/kg", "100 mg/kg")) +
+    #stat_compare_means(method = "anova", label.x = 0.8, label.y = 1.7 * max(df$log_measurement), size=5) +
+    ggsignif::geom_signif(
+      comparisons = dunnet$contrast,
+      annotations = dunnet$stars,
+      y_position = c(0.8 * abs(max(df$log_measurement) - min(df$log_measurement)), 0.9 * abs(max(df$log_measurement) - min(df$log_measurement))),
+      tip_length = 0,
+      textsize = 7)
+}
+
+#get the stat results too:
+wb_anova_stats <- function(df) {
+  anova.res <- aov(log_measurement ~ group + wb_gel_num, data = df)
+  s <- summary(anova.res)
+  p_val <- s[[1]]$`Pr(>F)`[1]
+  print(paste(n, "two-way ANOVA p-value", round(p_val, digits=4)))
+  dunnet <- glht(anova.res, mcp(group = "Dunnet")) %>% 
+    tidy() %>% 
+    mutate(stars = stars(adj.p.value))
+  print(paste(dunnet$contrast, round(dunnet$adj.p.value, digits=4), dunnet$stars))
+}
+```
+
+Figure time:
+Since only MDA and SOD were significant, split into two images:
+```{r warning=FALSE, fig.height=4, fig.width=12}
+fig_names <- c("sod", "tnfa", "mda")
+
+plot_list <- list()
+for (i in 1:(length(fig_names)-1)){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- wb_plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+
+for (i in length(fig_names)){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+
+plot_grid(plot_list[[1]], plot_list[[2]], plot_list[[3]], ncol=3, labels= "AUTO")
+```
+
+
+```{r eval=FALSE, include=FALSE}
+#also save as pdf:
+ggsave(
+  "sod_tnfa_mda.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  #width = ,
+  #height = 4,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
+
+```{r warning=FALSE, fig.height=4, fig.width=12}
+fig_names <- c("il6", "ast", "alt")
+
+plot_list <- list()
+
+for (i in 1:length(fig_names)){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+
+plot_grid(plot_list[[1]], plot_list[[2]], plot_list[[3]], ncol=3, labels= "AUTO")
+```
+
+```{r eval=FALSE, include=FALSE}
+#also save as pdf:
+ggsave(
+  "il6_ast_alt.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  width = 12,
+  height = 4,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
+
+Also get the p-values for the statistics we did:
+```{r}
+fig_names <- c("sod", "tnfa", "il6","ast", "alt", "mda")
+for (n in fig_names[!fig_names %in% "mda"]){
+  current_df <- get(n)
+  wb_anova_stats(current_df)
+}
+for (n in fig_names[fig_names %in% "mda"]){
+  current_df <- get(n)
+  anova_stats(current_df)
+}
+```

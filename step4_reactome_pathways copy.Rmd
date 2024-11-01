@@ -1,0 +1,329 @@
+---
+title: "Step 4: Reactome pathways rerun 2024"
+author: "Eleftheria Theodoropoulou"
+date: "Monday 29th April 2024"
+output: html_notebook
+---
+
+## Functional analysis - Molecular Signature pathways
+```{r include=FALSE}
+#packages:
+library(dplyr)
+library(DT)
+library(msigdbr)
+library(clusterProfiler)
+library(ggplot2)
+library(enrichplot)
+library(cowplot)
+```
+
+```{r include=FALSE}
+#directories:
+dataDir <- "data/"
+outDir <- "out/"
+```
+
+```{r include=FALSE}
+#functions:
+
+#test matching order
+test_match_order <- function(x,y) {
+
+if (isTRUE(all.equal(x,y))) print('Perfect match in same order')
+
+if (!isTRUE(all.equal(x,y)) && isTRUE(all.equal(sort(x),sort(y)))) print('Perfect match in wrong order')
+
+if (!isTRUE(all.equal(x,y)) && !isTRUE(all.equal(sort(x),sort(y)))) print('No match')
+}
+```
+
+```{r}
+#load data from previously made csv of the results (see step2 notebook)
+res_10 <- read.csv(file=paste0(outDir, "allgenes_10.csv"), row.names = 1)
+res_100 <- read.csv(file=paste0(outDir, "allgenes_100.csv"), row.names = 1)
+
+#metadata:
+sampleInfo <- read.csv(file = paste0(dataDir, "F0_metadata.csv"), sep = ",", header = TRUE)
+sampleInfo$group <- factor(sampleInfo$treatment, levels=c("control", "10mg.kg", "100mg.kg"))
+sampleInfo$file <- paste0(salmonDir,sampleInfo$sample.ID,"/quant.sf")
+files <- sampleInfo$file
+names(files) <- sampleInfo$NGI.ID
+
+# add the rin value and the plate number where the facility did the library prep
+rin <- read.csv(file = paste0(dataDir, "liver_RNA_facility_RIN_values.csv"), sep = ",", header = TRUE)
+sampleInfo <- left_join(x=sampleInfo, y=rin, by="sample.ID")
+```
+
+
+```{r include=FALSE}
+comp_10 <- res_10[complete.cases(res_10$padj),]
+comp_100 <- res_100[complete.cases(res_100$padj),]
+```
+
+```{r include=FALSE}
+#ranked geneList with ENSEMBL IDs
+# create the score ranking on the complete cases only:
+comp_10$score <- sign(comp_10$log2FoldChange) * -log10(comp_10$pvalue)
+#numeric vector
+genelist_10_pval <- comp_10$score
+#named vector
+names(genelist_10_pval) <- as.character(rownames(comp_10))
+#order (sorted vector)
+genelist_10_pval <- sort(genelist_10_pval, decreasing=TRUE)
+length(genelist_10_pval)
+#length(unique(genelist_10_pval))
+#n_occur_10 <- data.frame(table(genelist_10_pval))
+#n_occur_10[n_occur_10$Freq > 100,]
+```
+
+```{r include=FALSE}
+#ranked geneList with ENSEMBL IDs
+# create the score ranking on the complete cases only:
+comp_100$score <- sign(comp_100$log2FoldChange) * -log10(comp_100$pvalue)
+#numeric vector
+genelist_100_pval <- comp_100$score
+#named vector
+names(genelist_100_pval) <- as.character(rownames(comp_100))
+#order (sorted vector)
+genelist_100_pval <- sort(genelist_100_pval, decreasing=TRUE)
+length(genelist_100_pval)
+```
+
+### Reactome pathways:
+Canonical pathways are curated and very well known from mouse experiments. Those include KEGG and Reactome pathways.
+```{r include=FALSE}
+msigdbr_collections()
+```
+
+```{r include=FALSE}
+# get and make the object with genes and pathways from the msigdb
+cp4_gene_sets <- msigdbr(species = "mouse", category = "C2", subcategory = "CP:REACTOME")
+cp4_gene_sets %>% dplyr::distinct(gs_name)
+msigdbr_t2g_cp4_ensembl <- cp4_gene_sets %>% dplyr::distinct(gs_name, ensembl_gene) %>% as.data.frame()
+dim(msigdbr_t2g_cp4_ensembl)
+
+```
+
+#### 10 mg/kg
+
+```{r include=FALSE}
+set.seed(456)
+
+fgsea_10_Re_ensembl <- 
+  GSEA(
+  genelist_10_pval,
+  exponent = 1,
+  minGSSize = 10,
+  maxGSSize = 500,
+  eps = 1e-10,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+  msigdbr_t2g_cp4_ensembl,
+  TERM2NAME = NA,
+  gson = NULL,
+  verbose = TRUE,
+  seed = T,
+  by = "fgsea",
+  nPermSimple = 1000)
+```
+
+```{r echo=FALSE, warning=FALSE}
+fgsea_10_Re <- as.data.frame(fgsea_10_Re_ensembl)
+datatable(fgsea_10_Re)
+# save the results as they are for the supplementary:
+write.csv(fgsea_10_Re, file=paste0(outDir, "fgsea_10_Re.csv"))
+```
+
+```{r fig.width=30, fig.height=12}
+# make treeplot to show all results in hierarchical clustering
+edo <- pairwise_termsim(fgsea_10_Re_ensembl)
+treeplot(edo, hclust_method = "average", showCategory = 55, nCluster = 8, fontsize = 4, cex_category = 1, offset = 50, label_format = 50, color = "NES")
+tree_10 <- treeplot(edo, hclust_method = "average", showCategory = 55, nCluster = 8, fontsize = 4, cex_category = 1, offset = 50, label_format = 50, color = "NES")
+```
+
+#### 100 mg/kg
+
+```{r include=FALSE}
+set.seed(456)
+
+fgsea_100_Re_ensembl <- 
+  GSEA(
+  genelist_100_pval,
+  exponent = 1,
+  minGSSize = 10,
+  maxGSSize = 500,
+  eps = 1e-10,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+  gson = NULL,
+  msigdbr_t2g_cp4_ensembl,
+  TERM2NAME = NA,
+  verbose = TRUE,
+  seed = T,
+  by = "fgsea",
+  nPermSimple = 1000)
+```
+
+```{r echo=FALSE, warning=FALSE}
+fgsea_100_Re <- as.data.frame(fgsea_100_Re_ensembl)
+datatable(fgsea_100_Re)
+write.csv(fgsea_100_Re, file=paste0(outDir, "fgsea_100_Re.csv"))
+```
+
+```{r fig.width=30, fig.height=12}
+# make treeplot to show all results in hierarchical clustering
+edo <- pairwise_termsim(fgsea_100_Re_ensembl)
+treeplot(edo, hclust_method = "average", showCategory = 42, nCluster = 9, fontsize = 4, cex_category = 1, offset = 50, label_format = 50, color = "NES")
+tree_100 <- treeplot(edo, hclust_method = "average", showCategory = 42, nCluster = 9, fontsize = 4, cex_category = 1, offset = 50, label_format = 50, color = "NES")
+```
+
+```{r fig.height=24, fig.width=30}
+# make a Figure for the supplementary containing all pathways for 10 and 100 group in hierarchical treeplots.
+plot_grid(tree_10, tree_100, align = "h", labels = "AUTO", label_size = 26, ncol=1)
+```
+
+```{r eval=FALSE, include=FALSE}
+#also save as pdf:
+ggsave(
+  "reactome_pathways_F0_all_treeplot.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  width = 30,
+  height = 24,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
+
+Make pathways of interest into a simple plot:
+```{r fig.height=7, fig.width=10}
+res_to_plot_10 <- fgsea_10_Re[c("REACTOME_REGULATION_OF_CHOLESTEROL_BIOSYNTHESIS_BY_SREBP_SREBF", "REACTOME_CELLULAR_RESPONSE_TO_CHEMICAL_STRESS", "REACTOME_UNFOLDED_PROTEIN_RESPONSE_UPR"),]
+res_to_plot_10$group <- "10 mg/kg"
+res_to_plot_100 <- fgsea_100_Re[c("REACTOME_RESPONSE_OF_EIF2AK4_GCN2_TO_AMINO_ACID_DEFICIENCY", "REACTOME_TRANSLATION", "REACTOME_FATTY_ACID_METABOLISM", "REACTOME_THE_CITRIC_ACID_TCA_CYCLE_AND_RESPIRATORY_ELECTRON_TRANSPORT"),]
+res_to_plot_100$group <- "100 mg/kg"
+
+res_to_plot_list <- list(res_to_plot_10, res_to_plot_100)
+names(res_to_plot_list) <- c("res_to_plot_10", "res_to_plot_100")
+for (i in 1:length(res_to_plot_list)){
+  res_to_plot_list[[i]]$Description <- gsub("REACTOME_", "", res_to_plot_list[[i]]$Description)
+  res_to_plot_list[[i]]$Description <- gsub("_", " ", res_to_plot_list[[i]]$Description)
+  res_to_plot_list[[i]]$Description <- gsub("AND", "&", res_to_plot_list[[i]]$Description)
+}
+
+res_to_plot <- rbind(res_to_plot_10, res_to_plot_100)
+res_to_plot$Description <- gsub("REACTOME_", "", res_to_plot$Description)
+res_to_plot$Description <- gsub("_", " ", res_to_plot$Description)
+res_to_plot$Description <- gsub("AND", "&", res_to_plot$Description)
+res_to_plot <- res_to_plot %>%
+  mutate_at(vars(up_down), factor, levels= c("up", "down"))
+  
+  
+my_colours <- RColorBrewer::brewer.pal(3, "Set2")[c(1,3)]
+p1 <- ggplot(data=res_to_plot[res_to_plot$group=="10 mg/kg",], aes(reorder(Description, NES), NES)) + 
+  geom_bar(stat="identity", width=0.6, position=position_dodge(), aes(fill=up_down)) +
+  labs(title= "Reactome pathways of interest altrered in 10 mg/kg/day DBP group",
+         y="Normalised Enrichment Score", x= "Pathway name")+ 
+  scale_fill_manual(values=my_colours) +
+  theme_bw() +
+  coord_flip() +
+  theme(legend.position="none") 
+p2 <- ggplot(data=res_to_plot[res_to_plot$group=="100 mg/kg",], aes(reorder(Description, NES), NES)) + 
+  geom_bar(stat="identity", width=0.6, position=position_dodge(), aes(fill=up_down)) +
+  labs(title= "Reactome pathways of interest altrered in 100 mg/kg/day DBP group",
+         y="Normalised Enrichment Score", x= "Pathway name")+ 
+  scale_fill_manual(values=my_colours) +
+  theme_bw() +
+  coord_flip() +
+  theme(legend.position="none") 
+p3 <- ggplot(data=res_to_plot[res_to_plot$group=="100 mg/kg",], aes(reorder(Description, NES), NES)) + 
+  geom_bar(stat="identity", width=0.6, position=position_dodge(), aes(fill=up_down)) +
+  labs(title= "Reactome pathways of interest altrered in 100 mg/kg/day DBP group",
+         y="Normalised Enrichment Score", x= "Pathway name")+ 
+  scale_fill_manual(values=my_colours) +
+  theme_bw() +
+  coord_flip()
+
+plot_grid(p1, p2, p3, ncol=1, labels="AUTO")
+```
+
+```{r eval=FALSE, include=FALSE}
+#also save as pdf:
+ggsave(
+  "pathways_F0_10_and_100_simple.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  width = 10,
+  height = 7,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
+
+#### Reactome pathways in common
+```{r include=FALSE}
+#compare pathways from 10 and 100
+a <- which(fgsea_10_Re_ensembl@result$ID %in% fgsea_100_Re_ensembl@result$ID)
+b <- which(fgsea_100_Re_ensembl@result$ID %in% fgsea_10_Re_ensembl@result$ID)
+a_10 <- fgsea_10_Re_ensembl@result[a,]
+a_100 <- fgsea_100_Re_ensembl@result[b,]
+a_10 <- a_10[rownames(a_100),]
+test_match_order(a_10$ID, a_100$ID)
+```
+
+```{r fig.height=3, fig.width=10, echo=FALSE}
+a_10$group <- "10 mg/kg vs Control"
+a_100$group <- "100 mg/kg vs Control"
+a_tot <- rbind(a_10, a_100)
+a_tot$Description <- gsub("REACTOME_", "", a_tot$Description)
+a_tot$Description <- gsub("_", " ", a_tot$Description)
+a_tot$Description <- gsub("AND", "&", a_tot$Description)
+
+my_colours <- RColorBrewer::brewer.pal(3, "Blues")[c(2,3)]
+
+# Use position=position_dodge() to put them in the same plot
+ggplot(data=a_tot, aes(reorder(Description, NES), NES)) + 
+  geom_bar(stat="identity", width=0.6, position=position_dodge(), aes(fill=group)) +
+  labs(title= "Nine Reactome pathways altrered in both DBP treatment groups",
+         y="Normalised Enrichment Score", x= "Pathway name")+ 
+  scale_fill_manual(values=my_colours) +
+  #theme(axis.text=element_text(size=40)) +
+  theme_bw() +
+  coord_flip()
+
+common_plot <- ggplot(data=a_tot, aes(reorder(Description, NES), NES)) + 
+  geom_bar(stat="identity", width=0.6, position=position_dodge(), aes(fill=group)) +
+  labs(title= "Nine Reactome pathways altrered in both DBP treatment groups",
+         y="Normalised Enrichment Score", x= "Pathway name")+ 
+  scale_fill_manual(values=my_colours) +
+  theme_bw() +
+  coord_flip()
+```
+
+```{r fig.height=3, fig.width=10}
+plot_grid(common_plot, ncol=1, labels="A")
+```
+
+```{r eval=FALSE, include=FALSE}
+#also save as pdf:
+ggsave(
+  "common_pathways_F0.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  width = 10,
+  height = 3,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
+
+
+
+
+
+

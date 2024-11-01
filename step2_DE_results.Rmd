@@ -1,0 +1,209 @@
+---
+title: "Step 2: DE results rerun 2024"
+author: "Eleftheria Theodoropoulou"
+date: "Monday 29th April 2024"
+output: html_notebook
+---
+
+Get the genes that are DE in our groups and make figures and tables.
+
+```{r include=FALSE}
+#packages:
+library(DESeq2)
+library(biomaRt)
+library(DT)
+library(pheatmap)
+library(ggplot2)
+library(ggrepel)
+library(cowplot)
+library(gplots)
+library(gt)
+library(gtExtras)
+library(tidyverse)
+library(scales)
+```
+
+```{r include=FALSE}
+#directories:
+dataDir <- "data/"
+outDir <- "out/"
+```
+
+```{r include=FALSE}
+#functions:
+
+#test matching order
+test_match_order <- function(x,y) {
+
+if (isTRUE(all.equal(x,y))) print('Perfect match in same order')
+
+if (!isTRUE(all.equal(x,y)) && isTRUE(all.equal(sort(x),sort(y)))) print('Perfect match in wrong order')
+
+if (!isTRUE(all.equal(x,y)) && !isTRUE(all.equal(sort(x),sort(y)))) print('No match')
+}
+```
+
+```{r}
+#load data:
+load(file = paste0(dataDir, "ddssva_F0.RData"))
+```
+
+
+```{r include=FALSE}
+resultsNames(ddssva)
+```
+
+
+We are interested in the contrasts:  
+```{r include=FALSE}
+res_10 <- results(ddssva, contrast=c("group", "10mg.kg", "control"), alpha=0.05)
+res_10$ensembl_gene_id <- rownames(res_10)
+res_100 <- results(ddssva, contrast=c("group", "100mg.kg", "control"), alpha=0.05)
+res_100$ensembl_gene_id <- rownames(res_100)
+```
+
+```{r include=FALSE}
+# get gene names and descriptions in our results 
+# in one command, if one knows the dataset name:
+mart <- useMart("ensembl")
+mart <- useDataset("mmusculus_gene_ensembl", mart)
+#now the query is as follows:
+gene.ids <- getBM(attributes = c('ensembl_gene_id', 'entrezgene_id', 'mgi_symbol', 'gene_biotype', 'description', 'transcript_length', 'chromosome_name', 'start_position', 'end_position', 'strand'), mart = mart)
+length(unique(gene.ids$ensembl_gene_id))
+dim(gene.ids)
+head(gene.ids)
+```
+
+```{r include=FALSE}
+# for the 10
+my_ens <- res_10$ensembl_gene_id
+gene.ids_sub <- gene.ids[gene.ids$ensembl_gene_id %in% my_ens,]
+gene.ids_sub <- gene.ids_sub[!duplicated(gene.ids_sub$ensembl_gene_id),]
+  
+my_ens <- data.frame(ensembl_gene_id=res_10$ensembl_gene_id)
+gene.ids_sub <- merge(my_ens, gene.ids_sub, by="ensembl_gene_id", all.x=TRUE)
+
+# check if they match and are in the same order
+test_match_order(rownames(res_10), gene.ids_sub$ensembl_gene_id)
+
+colnames(gene.ids_sub)
+```
+
+```{r include=FALSE}
+# fix the rest of the columns
+res_10$entrezgene_id <- gene.ids_sub$entrezgene_id
+res_10$mgi_symbol <- gene.ids_sub$mgi_symbol
+res_10$gene_biotype <- gene.ids_sub$gene_biotype
+res_10$description <- gene.ids_sub$description
+res_10$transcript_length <- gene.ids_sub$transcript_length
+res_10$chromosome_name <- gene.ids_sub$chromosome_name
+res_10$start_position <- gene.ids_sub$start_position
+res_10$end_position <- gene.ids_sub$end_position
+res_10$strand <- gene.ids_sub$strand
+
+write.csv(as.data.frame(res_10), file=paste0(outDir, "allgenes_10.csv"), row.names = T)
+```
+
+```{r include=FALSE}
+# for the 100
+my_ens <- res_100$ensembl_gene_id
+gene.ids_sub <- gene.ids[gene.ids$ensembl_gene_id %in% my_ens,]
+gene.ids_sub <- gene.ids_sub[!duplicated(gene.ids_sub$ensembl_gene_id),]
+  
+my_ens <- data.frame(ensembl_gene_id=res_100$ensembl_gene_id)
+gene.ids_sub <- merge(my_ens, gene.ids_sub, by="ensembl_gene_id", all.x=TRUE)
+
+# check if they match and are in the same order
+test_match_order(rownames(res_100), gene.ids_sub$ensembl_gene_id)
+
+colnames(gene.ids_sub)
+```
+
+```{r include=FALSE}
+res_100$entrezgene_id <- gene.ids_sub$entrezgene_id
+res_100$mgi_symbol <- gene.ids_sub$mgi_symbol
+res_100$gene_biotype <- gene.ids_sub$gene_biotype
+res_100$description <- gene.ids_sub$description
+res_100$transcript_length <- gene.ids_sub$transcript_length
+res_100$chromosome_name <- gene.ids_sub$chromosome_name
+res_100$start_position <- gene.ids_sub$start_position
+res_100$end_position <- gene.ids_sub$end_position
+res_100$strand <- gene.ids_sub$strand
+
+write.csv(as.data.frame(res_100), file=paste0(outDir, "allgenes_100.csv"), row.names = T)
+```
+
+
+1. 10mg/kg vs control
+```{r echo=FALSE}
+summary(res_10)
+```
+
+```{r echo=FALSE, warning=FALSE}
+datatable(as.data.frame(res_10[!is.na(res_10$padj) & res_10$padj<0.05,]))
+write.csv(as.data.frame(res_10[!is.na(res_10$padj) & res_10$padj<0.05,]), file=paste0(outDir, "DEgenes_10.csv"), row.names = T)
+```
+
+2. 100mg/kg vs control
+```{r echo=FALSE}
+summary(res_100)
+```
+
+```{r echo=FALSE, warning=FALSE}
+datatable(as.data.frame(res_100[!is.na(res_100$padj) & res_100$padj<0.05,]))
+write.csv(as.data.frame(res_100[!is.na(res_100$padj) & res_100$padj<0.05,]), file=paste0(outDir, "DEgenes_100.csv"), row.names = T)
+```
+
+Make a table with the info I need for the top expressed DEGs to put in Figure 1:
+```{r}
+data10 <- as.data.frame(res_10[!is.na(res_10$padj) & res_10$padj<0.05,])
+data10$group <- "10 mg/kg"
+data100 <- as.data.frame(res_100[!is.na(res_100$padj) & res_100$padj<0.05,])
+data100$group <- "100 mg/kg"
+
+data <- rbind(data10, data100)
+data <- data[data$baseMean>100, c("mgi_symbol", "baseMean", "log2FoldChange", "padj", "group")]
+data <- rbind(data, data10[data10$mgi_symbol %in% data100$mgi_symbol, c("mgi_symbol", "baseMean", "log2FoldChange", "padj", "group")])
+data["ENSMUSG00000067147", "group"] <- "10 & 100 mg/kg"
+data$baseMean <- round(data$baseMean, 0)
+data$log2FoldChange <- round(data$log2FoldChange, 2)
+data$padj <- round(data$padj, 2)
+#colnames(data) <- c("Gene Name", "Mean counts", "log2FC", "padj", "DBP group")
+
+  
+gt(data) %>%
+  cols_label("mgi_symbol" = "Gene Name", 
+              "baseMean" = "Mean counts",
+              "log2FoldChange" = "log2FC", 
+              "padj" = "padj", 
+              "group" = "DBP group") %>%
+  cols_width(group ~ px(130),
+    everything() ~ px(110)) %>%
+  cols_align(align = "center", columns = everything()) %>%
+  tab_style(
+    style=list(cell_text(style="italic")),
+    locations=cells_body(columns=mgi_symbol)) %>%
+  tab_options(heading.title.font.size = px(20)) %>%
+  tab_header(
+    title="Differentially expressed genes of interest") %>%
+  opt_stylize(style = 6, color = 'blue') %>%
+  gtsave(file=paste0(outDir, "DEGs_interest_table.pdf"))
+```
+
+Are there any genes shared between the groups of DEGs?
+```{r echo=FALSE}
+#take only complete cases
+comp_10 <- res_10[complete.cases(res_10$padj),]
+comp_100 <- res_100[complete.cases(res_100$padj),]
+#get the DEs 
+names_10 <- row.names(comp_10[comp_10$padj <= 0.05, ])
+
+names_100 <- row.names(comp_100[comp_100$padj <= 0.05, ])
+
+venn(list(F0_10 = names_10,
+          F0_100 = names_100), simplify = F)
+```
+The one gene they have in common is:
+```{r echo=FALSE, warning=FALSE}
+datatable(as.data.frame(comp_10[names_10[which(names_10 %in% names_100)], ]))
+```

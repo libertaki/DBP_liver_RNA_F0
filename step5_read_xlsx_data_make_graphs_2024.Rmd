@@ -1,0 +1,548 @@
+---
+title: "read xlsx file with the raw data, do statistics and make into graph"
+output: html_notebook
+author: "Eleftheria Theodoropoulou"
+date: "May 2024"
+---
+
+This notebook is originally writen by Andrey and adapted to Eleftheria's data to import data tables from excel made by Paula and plot them. 
+
+
+```{r include=FALSE}
+library(readxl)
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+library(multcomp)
+library(tidyverse)
+library(broom)
+library(rstatix)
+library(cowplot)
+library(effectsize)
+```
+
+```{r}
+#test matching order
+test_match_order <- function(x,y) {
+
+if (isTRUE(all.equal(x,y))) print('Perfect match in same order')
+
+if (!isTRUE(all.equal(x,y)) && isTRUE(all.equal(sort(x),sort(y)))) print('Perfect match in wrong order')
+
+if (!isTRUE(all.equal(x,y)) && !isTRUE(all.equal(sort(x),sort(y)))) print('No match')
+}
+```
+
+
+```{r}
+rawresDir <- "raw_results_liver.xlsx"
+outDir <- "plots_ET_copy/"
+```
+
+```{r include=FALSE}
+# import phenotype data
+atp <- read_excel(rawresDir, sheet = "atp")
+srebp2 <- read_excel(rawresDir, sheet = "srebp2")
+collagen <- read_excel(rawresDir, sheet = "collagen")
+glucokinase <- read_excel(rawresDir, sheet = "gkase")
+phospho_acc <- read_excel(rawresDir, sheet = "phospho_acc")
+laminin <- read_excel(rawresDir, sheet = "laminin")
+eif <- read_excel(rawresDir, sheet = "eif")
+fas <- read_excel(rawresDir, sheet = "fas")
+fibronectin <- read_excel(rawresDir, sheet = "fibronectin")
+aldh1a <- read_excel(rawresDir, sheet = "aldh1a")
+calnexin <- read_excel(rawresDir, sheet = "calnexin")
+oil_red_o <- read_excel(rawresDir, sheet = "oil_red_o")
+pparg <- read_excel(rawresDir, sheet = "pparg")
+hmgcr <- read_excel(rawresDir, sheet = "hmgcr")
+gnc2 <- read_excel(rawresDir, sheet = "gnc2")
+ugt <- read_excel(rawresDir, sheet = "ugt")
+nuc_ppara <- read_excel(rawresDir, sheet = "nuc_ppara")
+srebp1 <- read_excel(rawresDir, sheet = "srbp1")
+gpat <- read_excel(rawresDir, sheet = "gpat")
+tot_ppara <- read_excel(rawresDir, sheet = "tot_ppara")
+
+all_res_names <- c("atp", "collagen", "glucokinase", "phospho_acc", "laminin", "eif", "fas", "fibronectin", "aldh1a", "calnexin", "oil_red_o", "pparg", "hmgcr", "gnc2", "ugt", "srebp1", "gpat", "nuc_ppara", "tot_ppara", "srebp2") 
+
+#also get the batch for the WB results:
+wb_batch <- read_excel("PROTEIN _DOSAGE_210722.xlsx", sheet= "wb_gel_num")
+wb_batch$sample.ID <- paste0("F0_", wb_batch$sample.ID)
+
+#not all results need a western blot batch, as they were measured with other methods, therefore we need to subset the wb ones:
+wb_res_names <- all_res_names[!all_res_names %in% c("atp", "oil_red_o", "nuc_ppara", "tot_ppara", "collagen", "fibronectin", "laminin")]
+
+# fix the colnames:
+for (name in all_res_names) {
+  # Get the data frame using get() function
+  current_df <- get(name)
+  
+  colnames(current_df) <- c("sample.IDc", "valuec", "sample.IDl", "valuel", "sample.IDh", "valueh")
+  assign(name, current_df)
+}
+```
+
+```{r}
+# convert to long format and fix groups
+for (name in all_res_names) {
+  current_df <- get(name)
+  df_long <- current_df %>%
+    pivot_longer(
+      cols = everything(),
+      names_to = c(".value", "group"),
+      names_pattern = "(.*)([c,l,h])"
+    ) %>%
+    drop_na() %>%
+    arrange(sample.ID) %>%
+    mutate(group = case_when(
+      group == "c" ~ "control",
+      group == "l" ~ "10 mg/kg",
+      group == "h" ~ "100 mg/kg"
+    )) %>% 
+    mutate_at(vars(group), factor, levels= c("control", "10 mg/kg", "100 mg/kg")) %>%
+    mutate(sample.ID = paste0("F0_", sample.ID)) %>%
+    dplyr::rename(measurement = value) %>%
+    relocate(sample.ID) %>%
+    add_column(name = name)
+ 
+  assign(name, df_long)
+}
+```
+
+Add the variable "wb_batch" to the wb results:
+```{r}
+for (name in all_res_names[all_res_names %in% wb_res_names]) {
+  current_df <- get(name)
+  
+  current_df <- left_join(current_df, wb_batch, by = "sample.ID")
+  assign(name, current_df)
+}
+```
+
+
+After running multiple tests and visualisations in our data (in another notebook), we decided: We will log transform all the WB data and do two way ANOVA, since we have the "batch" effect also. We will NOT use log transformed values for the other data and do ANOVA or Kruskal Wallis. Post hoc we will do Dunnet on all for the "group" variable.
+```{r}
+# do all but oil_red_o, because that one has zeroes
+for (name in all_res_names[all_res_names %in% wb_res_names]){
+  current_df <- get(name)
+  #log transform the measurement:
+  current_df$log_measurement <- log2(current_df$measurement)
+  #save in the data frame:
+  assign(name, current_df)
+}
+```
+
+Prepare the graph statistics:
+```{r}
+titles <- c("ATP", "Collagen",  "Glucokinase", "phospho-ACC(Ser79) ", "Laminin", "phospho-eIF2a(Ser51)", "FAS", "Fibronectin", "ALDH1A",  "Calnexin", "Oil-red-O", "PPARγ", "HMGCR", "GNC2", "UGT", "SREBP-1", "GPAT1", "Nuclear PPARα", "Total PPARα",  "SREBP-2")
+
+df_names <- data.frame(title = titles, ylab= NA, df_name = all_res_names)
+rownames(df_names) <- df_names$df_name
+
+df_names$ylab[df_names$df_name %in% wb_res_names] <- "log2 levels"
+df_names$ylab[df_names$df_name %in% c("collagen", "fibronectin", "laminin", "nuc_ppara", "tot_ppara")] <- "integrated intensity"
+df_names$ylab[df_names$df_name == "oil_red_o"] <- "ROI, pixels"
+df_names$ylab[df_names$df_name == "atp"] <- "nmol/g wet weight"
+```
+
+
+```{r}
+#put all the results in a df list
+df_list <- list()
+for (name in all_res_names) {
+  current_df <- get(name)
+  assign(name, current_df)
+  df_list[[name]] <- current_df
+}
+
+#made a df of the titles and one of the ylabs
+df_titles <- data.frame(atp=df_names["atp", "title"], collagen=df_names["collagen", "title"])
+for (n in df_names$df_name[!df_names$df_name %in% c("atp", "collagen")]){
+  df_titles$n <- df_names[n,"title"]
+  colnames(df_titles)[ncol(df_titles)] <- n
+}
+df_ylabs <- data.frame(atp=df_names["atp", "ylab"], collagen=df_names["collagen", "ylab"])
+for (n in df_names$df_name[!df_names$df_name %in% c("atp", "collagen")]){
+  df_ylabs$n <- df_names[n,"ylab"]
+  colnames(df_ylabs)[ncol(df_ylabs)] <- n
+}
+
+#ad the titles and ylabs as df in this too - don't need this after all
+#my_objects <- list(df_list, df_titles, df_ylabs)
+```
+
+```{r}
+#fix the stats for the stars
+stars <- function(p) {
+  case_when(
+    p <= 0.001 ~ "***",
+    p <= 0.01  ~ "**",
+    p <= 0.05  ~ "*",
+    p <= 0.1   ~ "#"
+  )
+}
+```
+
+Raw data plots with one way ANOVA:
+```{r}
+#the plot with stars from Dunnet for raw data (no WB)
+plot_stars <- function(df, title, ylab) {
+  anova.res <- aov(measurement ~ group, data = df)
+  dunnet <- glht(anova.res, mcp(group = "Dunnet")) %>% 
+    tidy() %>% 
+    mutate(contrast = str_split(contrast, " - "), stars = stars(adj.p.value))
+  p <- ggplot(df, aes(x=group, y=measurement, fill=group)) +
+    stat_boxplot(geom = "errorbar", width = 0.25)+
+    geom_boxplot(outlier.color = NA, width = 0.5) +
+    geom_jitter(shape=16, position=position_jitter(0.1)) + 
+    scale_fill_brewer(palette="Blues") +
+    theme_classic() +
+    theme(legend.position = "none", aspect.ratio = 1, 
+          axis.text=element_text(size=13),
+          axis.title.y=element_text(size=14, face="bold", margin = margin(t = 0 , r = 10, b = 0, l = 0)),
+          plot.title=element_text(size=14, face="bold", vjust=2)) +
+    ylim(0, 1.4 * max(df$measurement)) +
+    labs(x = "", title = "", y = paste0(title," (", ylab, ")")) +
+    scale_x_discrete(labels = c("Control", "10 mg/kg", "100 mg/kg")) +
+    #stat_compare_means(method = "anova", label.x = 0.8, label.y = 1.6 * max(df$measurement), size=5) +
+    ggsignif::geom_signif(
+      comparisons = dunnet$contrast,
+      annotations = dunnet$stars,
+      y_position = c(1.1 * max(df$measurement), 1.25 * max(df$measurement)),
+      tip_length = 0,
+      textsize = 7)
+}
+
+#get the stat results too:
+anova_stats <- function(df) {
+  anova.res <- aov(measurement ~ group, data = df)
+  s <- summary(anova.res)
+  p_val <- s[[1]]$`Pr(>F)`[1]
+  print(paste(n, "one-way ANOVA p-value", round(p_val, digits=4)))
+  dunnet <- glht(anova.res, mcp(group = "Dunnet")) %>% 
+    tidy() %>% 
+    mutate(stars = stars(adj.p.value))
+  print(paste(dunnet$contrast, round(dunnet$adj.p.value, digits=4), dunnet$stars))
+}
+```
+
+So let's deal with one "Figure" at a time: first, the figure about the extra cellular matrix components:
+```{r warning=FALSE, fig.height=12, fig.width=6}
+# collagen, fibronectin and laminin
+fig_names <- c("collagen", "fibronectin", "laminin")
+
+plot_list <- list()
+for (i in 1:length(fig_names)){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+
+
+plot_grid(plot_list[[1]], plot_list[[2]], plot_list[[3]], ncol=1, labels= "AUTO")
+```
+
+Also get the p-values for the statistics we did for each:
+```{r}
+fig_names <- c("collagen", "fibronectin", "laminin")
+for (n in fig_names){
+  current_df <- get(n)
+  anova_stats(current_df)
+}
+```
+
+
+```{r eval=FALSE, include=FALSE}
+#also save as pdf:
+ggsave(
+  "figure_collagen_laminin_fibronectin.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  width = 6,
+  height = 12,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
+
+WB plots with two way ANOVA:
+```{r}
+#library(viridis)
+#the plot with stars from Dunnet for WB data, log transformed
+wb_plot_stars <- function(df, title, ylab) {
+  anova.res <- aov(log_measurement ~ group + wb_gel_num, data = df)
+  dunnet <- glht(anova.res, mcp(group = "Dunnet")) %>% 
+    tidy() %>% 
+    mutate(contrast = str_split(contrast, " - "), stars = stars(adj.p.value))
+  p <- ggplot(df,aes(x=group, y=log_measurement, fill=group)) +
+    stat_boxplot(geom = "errorbar", width = 0.25)+
+    geom_boxplot(outlier.color = NA, width = 0.5) +
+    geom_jitter(shape=16, position=position_jitter(0.1)) +  #aes(color = wb_gel_num), if I want to colour them per batch
+    scale_fill_brewer(palette="Blues") +
+    #scale_color_viridis(option = "plasma") +
+    theme_classic() +
+    theme(legend.position = "none", aspect.ratio = 1, 
+          axis.text=element_text(size=13),
+          axis.title.y=element_text(size=14, face="bold", margin = margin(t = 0 , r = 10, b = 0, l = 0))) +
+    ylim(NA, 1.27 * abs(max(df$log_measurement) - min(df$log_measurement))) + #
+    labs(x = "", title = "", y = paste0(title," (", ylab, ")")) +
+    scale_x_discrete(labels = c("Control", "10 mg/kg", "100 mg/kg")) +
+    #stat_compare_means(method = "anova", label.x = 0.8, label.y = 1.7 * max(df$log_measurement), size=5) +
+    ggsignif::geom_signif(
+      comparisons = dunnet$contrast,
+      annotations = dunnet$stars,
+      y_position = c(1.02 * abs(max(df$log_measurement) - min(df$log_measurement)), 1.16 * abs(max(df$log_measurement) - min(df$log_measurement))),
+      tip_length = 0,
+      textsize = 7)
+}
+
+
+# make another for when the values are high so that the yaxis gets messy:
+#the plot with stars from Dunnet for WB data, log transformed
+h_wb_plot_stars <- function(df, title, ylab) {
+  anova.res <- aov(log_measurement ~ group + wb_gel_num, data = df)
+  dunnet <- glht(anova.res, mcp(group = "Dunnet")) %>% 
+    tidy() %>% 
+    mutate(contrast = str_split(contrast, " - "), stars = stars(adj.p.value))
+  p <- ggplot(df,aes(x=group, y=log_measurement, fill=group)) +
+    stat_boxplot(geom = "errorbar", width = 0.25)+
+    geom_boxplot(outlier.color = NA, width = 0.5) +
+    geom_jitter(shape=16, position=position_jitter(0.1)) +  #aes(color = wb_gel_num), if I want to colour them per batch
+    scale_fill_brewer(palette="Blues") +
+    #scale_color_viridis(option = "plasma") +
+    theme_classic() +
+    theme(legend.position = "none", aspect.ratio = 1, 
+          axis.text=element_text(size=13),
+          axis.title.y=element_text(size=14, face="bold", margin = margin(t = 0 , r = 10, b = 0, l = 0)))+
+    ylim(NA, 1.1 * max(df$log_measurement)) +
+    labs(x = "", title = "", y = paste0(title," (", ylab, ")")) +
+    scale_x_discrete(labels = c("Control", "10 mg/kg", "100 mg/kg")) +
+    #stat_compare_means(method = "anova", label.x = 0.8, label.y = 1.7 * max(df$log_measurement), size=5) +
+    ggsignif::geom_signif(
+      comparisons = dunnet$contrast,
+      annotations = dunnet$stars,
+      y_position = c(1.02 * max(df$log_measurement), 1.06 * max(df$log_measurement)),
+      tip_length = 0,
+      textsize = 7)
+}
+
+
+#get the stat results too:
+wb_anova_stats <- function(df) {
+  anova.res <- aov(log_measurement ~ group + wb_gel_num, data = df)
+  s <- summary(anova.res)
+  p_val <- s[[1]]$`Pr(>F)`[1]
+  print(paste(n, "two-way ANOVA p-value", round(p_val, digits=4)))
+  dunnet <- glht(anova.res, mcp(group = "Dunnet")) %>% 
+    tidy() %>% 
+    mutate(stars = stars(adj.p.value))
+  print(paste(dunnet$contrast, round(dunnet$adj.p.value, digits=4), dunnet$stars))
+}
+```
+
+Kruskal Wallis with Dunn plot:
+```{r}
+#the plot with stars from Dunnet for raw data (no WB) but wih Kruskal Wallis instead of ANOVA
+kw_plot_stars <- function(df, title, ylab) {
+  kruskal.res <- kruskal.test(measurement ~ group, data = df)
+  dunn <- dunn_test(df, measurement ~ group, p.adjust.method = "BH", detailed = FALSE) %>%
+  mutate(contrast = str_split(paste0(as.character(group1), "_", as.character(group2)), "_"), stars = stars(p.adj)) %>%
+  filter(!row_number() %in% 3)
+  p <- ggplot(df, aes(x=group, y=measurement, fill=group)) +
+    stat_boxplot(geom = "errorbar", width = 0.25)+
+    geom_boxplot(outlier.color = NA, width = 0.5) +
+    geom_jitter(shape=16, position=position_jitter(0.1)) + 
+    scale_fill_brewer(palette="Blues") +
+    theme_classic() +
+    theme(legend.position = "none", aspect.ratio = 1, 
+          axis.text=element_text(size=13),
+          axis.title.y=element_text(size=14, face="bold", margin = margin(t = 0 , r = 10, b = 0, l = 0)),
+          plot.title=element_text(size=14, face="bold", vjust=2)) +
+    ylim(0, 1.25 * max(df$measurement)) +
+    labs(x = "", title = "", y = paste0(title," (", ylab, ")")) +
+    scale_x_discrete(labels = c("Control", "10 mg/kg", "100 mg/kg")) +
+    #stat_compare_means(method = "anova", label.x = 0.7, label.y = 1.3 * max(df$measurement), size=5) +
+    #stat_compare_means(comparisons = list(c("control", "10 mg/kg"), c("control", "100 mg/kg")), # the default method is KW here
+                       #ref.group = "control", label="p.signif", method="wilcox.test", hide.ns = TRUE, tip.length = 0)
+    ggsignif::geom_signif(
+      comparisons = dunn$contrast,
+      annotations = dunn$stars,
+      y_position = c(1.02 * max(df$measurement), 1.13 * max(df$measurement)),
+      tip_length = 0,
+      textsize = 7)
+    #stat_compare_means(label.y = 50)
+}
+
+#get the stat results too:
+kw_stats <- function(df) {
+  kruskal.res <- kruskal.test(measurement ~ group, data = df)
+  print(paste(n, "Kruskal-Wallis p-value", round(kruskal.res$p.value, digits=4)))
+  dunn <- dunn_test(df, measurement ~ group, p.adjust.method = "BH", detailed = FALSE) %>%
+  mutate(contrast = str_split(paste0(as.character(group1), "_", as.character(group2)), "_"), stars = stars(p.adj)) %>%
+  filter(!row_number() %in% 3)
+  print(paste(dunn$group1, dunn$group2, round(dunn$p.adj, digits=4), dunnet$stars))
+}
+```
+
+Figure: Oil red O graph with KW:
+```{r}
+fig_names <- "oil_red_o"
+
+plot_list <- list()
+for (i in 1:length(fig_names)){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- kw_plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+print(plot_list[[1]])
+```
+
+```{r}
+fig_names <- "oil_red_o"
+for (n in fig_names){
+  current_df <- get(n)
+  kw_stats(current_df)
+}
+```
+
+```{r}
+#also save as pdf:
+ggsave(
+  "figure6_oil_red_o.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  #width = 6,
+  #height = 12,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
+
+Figure cont: PPARα (total and nuclear fraction)
+```{r warning=FALSE, fig.height=5, fig.width=12}
+fig_names <- c("tot_ppara", "nuc_ppara")
+
+plot_list <- list()
+for (i in 1:(length(fig_names))){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+
+plot_grid(plot_list[[1]], plot_list[[2]], nrow=1, labels= "AUTO")
+```
+
+```{r}
+for (n in fig_names){
+  current_df <- get(n)
+  anova_stats(current_df)
+}
+```
+
+
+```{r}
+#also save as pdf:
+ggsave(
+  "figure_PPARas.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  width = 12,
+  height = 5,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
+
+Figure, only signif:
+```{r warning=FALSE, fig.height=12, fig.width=10}
+fig_names <- c("calnexin", "gnc2", "srebp1", "phospho_acc", "glucokinase", "pparg", "fas", "srebp2", "atp") 
+
+plot_list <- list()
+for (i in 1:(length(fig_names)-2)){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- wb_plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+
+for (i in length(fig_names)-1){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- h_wb_plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+
+for (i in length(fig_names)){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- kw_plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+
+plot_grid(plot_list[[1]], plot_list[[2]], plot_list[[3]], plot_list[[4]], plot_list[[9]], plot_list[[5]], plot_list[[6]], plot_list[[7]], plot_list[[8]], nrow = 3, labels= "AUTO")
+```
+
+```{r}
+for (n in fig_names[!fig_names %in% "atp"]){
+  current_df <- get(n)
+  wb_anova_stats(current_df)
+}
+for (n in fig_names[fig_names %in% "atp"]){
+  current_df <- get(n)
+  kw_stats(current_df)
+}
+```
+
+```{r}
+#also save as pdf:
+ggsave(
+  "revision_figure6_all_signif.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  width = 10,
+  height = 12,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
+
+Supplementary Figure: ALDH1A1, UGT, GPAT1 and HMGCR
+```{r warning=FALSE, fig.height=8, fig.width=10}
+fig_names <- c("eif", "gpat", "hmgcr", "aldh1a", "ugt") 
+
+plot_list <- list()
+for (i in 1:(length(fig_names))){
+  n <- fig_names[i]
+  current_df <- get(n)
+  plot_list[[i]] <- h_wb_plot_stars(current_df, df_titles[,n], df_ylabs[,n])
+}
+
+plot_grid(plot_list[[1]], plot_list[[2]], plot_list[[3]], plot_list[[4]], plot_list[[5]], nrow = 2, labels= "AUTO")
+```
+
+And the stats:
+```{r}
+for (n in fig_names){
+  current_df <- get(n)
+  wb_anova_stats(current_df)
+}
+```
+
+```{r}
+#also save as pdf:
+ggsave(
+  "supp_fig_non_signif.pdf",
+  plot = last_plot(),
+  device = "pdf",
+  path = outDir,
+  scale = 1,
+  width = 10,
+  height = 8,
+  #units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+)
+```
